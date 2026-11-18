@@ -1,0 +1,80 @@
+# Full stack:   docker compose up -d --build        → http://localhost:3000
+# Dev:          docker compose up -d db redis       (then run the API, worker and frontend locally)
+# Host ports (5434, 6380, 8001, 3000) are chosen so this runs next to DocuMind without clashes.
+
+x-backend: &backend
+  build: ./backend
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql://actionpilot:actionpilot@db:5432/actionpilot
+    REDIS_URL: redis://redis:6379/0
+    UPLOAD_DIR: /app/data/uploads
+  volumes:
+    - uploads:/app/data/uploads # the API saves recordings here and the worker reads them
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: actionpilot
+      POSTGRES_PASSWORD: actionpilot
+      POSTGRES_DB: actionpilot
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actionpilot"]
+      interval: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"] # keep queued jobs and scheduled reminders across restarts
+    ports:
+      - "6380:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    environment:
+      DATABASE_URL: postgresql://actionpilot:actionpilot@db:5432/actionpilot
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/data/uploads
+      ROOT_PATH: /api
+    ports:
+      - "8001:8000"
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    healthcheck:
+      disable: true
+
+  web:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT:-3000}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
